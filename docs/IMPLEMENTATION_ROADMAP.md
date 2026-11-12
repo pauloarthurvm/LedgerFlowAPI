@@ -25,18 +25,19 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 | --- | --- | --- |
 | 1 | Bootstrap the application | A minimal Boot application builds and starts |
 | 2 | Provide health and base configuration | Health is exposed and UTC is available |
-| 3 | Establish domain and shared in-memory state | Seed accounts and locking foundation exist |
-| 4 | Read accounts | Clients can list and inspect accounts/balances |
-| 5 | Standardize API errors and input behavior | Invalid requests return predictable JSON |
-| 6 | Create atomic transfers | Funds move safely with complete transaction records |
-| 7 | Make transfers idempotent | Retries do not duplicate movement |
-| 8 | Expose transfer creation over HTTP | Clients can create and correlate transfers |
-| 9 | Read transactions and history | Clients can retrieve stable transaction snapshots |
-| 10 | Reverse completed transfers | Clients can safely compensate one transfer |
-| 11 | Reset the simulation | Test suites can restore the initial state |
-| 12 | Protect concurrency invariants | Concurrent requests preserve correctness |
-| 13 | Containerize the application | The API runs in one Docker container |
-| 14 | Run the JMeter tutorial acceptance pass | The tutorial scenarios are proven manually |
+| 3 | Provide operational logging and request correlation | Safe, structured request logs identify each call |
+| 4 | Establish domain and shared in-memory state | Seed accounts and locking foundation exist |
+| 5 | Read accounts | Clients can list and inspect accounts/balances |
+| 6 | Standardize API errors and input behavior | Invalid requests return predictable JSON |
+| 7 | Create atomic transfers | Funds move safely with complete transaction records |
+| 8 | Make transfers idempotent | Retries do not duplicate movement |
+| 9 | Expose transfer creation over HTTP | Clients can create and correlate transfers |
+| 10 | Read transactions and history | Clients can retrieve stable transaction snapshots |
+| 11 | Reverse completed transfers | Clients can safely compensate one transfer |
+| 12 | Reset the simulation | Test suites can restore the initial state |
+| 13 | Protect concurrency invariants | Concurrent requests preserve correctness |
+| 14 | Containerize the application | The API runs in one Docker container |
+| 15 | Run the JMeter tutorial acceptance pass | The tutorial scenarios are proven manually |
 
 ## Story 1 — Bootstrap the application
 
@@ -100,7 +101,40 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 
 - Call health before and after a local application restart. It should not depend on an external service.
 
-## Story 3 — Establish domain and shared in-memory state
+## Story 3 — Provide operational logging and request correlation
+
+**User story:** As a developer and tutorial user, I want safe, structured, correlated application logs so that I can diagnose requests without exposing financial or client data.
+
+### Implementation tasks
+
+1. Use the SLF4J API with Spring Boot's default Logback implementation already supplied by the existing starters. Do not add Log4j, Log4j2, another logging implementation, or a custom `logback-spring.xml` file.
+2. Emit logs only to standard output. Do not create local log files; local terminals and container runtimes collect stdout.
+3. Configure structured Logstash JSON console logging with Boot's built-in support. Set root and `org.vass.ledgerflow` loggers to INFO, and `org.springframework.web` to WARN.
+4. Add a request-correlation filter that accepts an `X-Request-Id` value of 1–64 ASCII letters, digits, `.`, `_`, or `-`, or generates a UUID when it is absent or invalid. Return the resolved ID in the `X-Request-Id` response header.
+5. Put the resolved request ID in MDC for the lifetime of the request and always remove it in a `finally` block. This must work correctly with servlet-thread reuse.
+6. After the filter chain completes, emit exactly one INFO completion event for each `/api/v1` request. Include only request ID, HTTP method, matched route template without identifiers or query parameters, response status, and elapsed duration in milliseconds. Do not emit this event for `/actuator/health` at INFO level.
+7. Never log request or response bodies, `Idempotency-Key` values, credentials, cookies, holder names, account identifiers, balances, transfer amounts, or descriptions. Do not add log collection, tracing, or an external observability service.
+
+### Acceptance criteria
+
+- Console output is one valid Logstash JSON object per log event and includes the MDC request ID when it exists.
+- Every HTTP response, including health, contains a nonblank `X-Request-Id` header.
+- A valid incoming request ID is returned unchanged; a missing or invalid value is replaced with a server-generated UUID.
+- A business API request produces one completion event with only the approved operational fields.
+- Health probes do not produce an INFO completion event.
+- No configured logger writes to a local file, and no sensitive request/business data appears in log messages or MDC.
+
+### Minimum automated verification
+
+- Extend the health MVC test to assert 200, `UP`, and a nonblank `X-Request-Id` response header.
+- Send a valid `X-Request-Id` to health and assert that the response preserves it.
+- Unit-test the correlation filter's invalid/missing-header behavior and verify MDC is cleared after the filter chain returns. Use a mock filter chain; do not parse captured console logs.
+
+### Manual check
+
+- Call health and inspect console output. Confirm structured startup logs, the response correlation header, and no INFO request-completion event for health.
+
+## Story 4 — Establish domain and shared in-memory state
 
 **User story:** As the API, I want exact seeded account state and one coordinated in-memory state boundary so that all later operations start from known data and can be made safe under concurrency.
 
@@ -111,7 +145,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
    - `Account`: account ID, holder name, BigDecimal balance, and USD currency.
    - `Transaction`: fields specified in the design, including type/status/link fields.
    - Transaction type and status enums.
-   - A canonical transfer request value and idempotency entry type. They may remain unused until story 7, but defining them now prevents a later ad hoc model.
+   - A canonical transfer request value and idempotency entry type. They may remain unused until story 8, but defining them now prevents a later ad hoc model.
 3. Create a seed-data factory containing exactly:
    - `ACC-001`, Alice Johnson, 10000.00 USD.
    - `ACC-002`, Brian Miller, 5000.00 USD.
@@ -139,7 +173,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 
 - Restart the application and confirm the same three seed accounts are recreated once account endpoints exist.
 
-## Story 4 — Read accounts
+## Story 5 — Read accounts
 
 **User story:** As a tutorial user, I want to list accounts and retrieve a single account or its balance so that I have stable starting data for functional and load-test requests.
 
@@ -154,7 +188,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 4. Sort the list by `accountId` ascending.
 5. Return account ID, holder name, balance, and currency for account details; return account ID, balance, and currency for balances.
 6. Add `Cache-Control: no-store` to business API responses.
-7. Establish a focused account-not-found exception that story 5 will map to a standard 404 body. Until story 5, complete the exception mapping required for these endpoints rather than relying on a default error page.
+7. Establish a focused account-not-found exception that story 6 will map to a standard 404 body. Until story 6, complete the exception mapping required for these endpoints rather than relying on a default error page.
 
 ### Acceptance criteria
 
@@ -176,7 +210,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 
 - Use a REST client to compare `ACC-001` detail balance and balance-endpoint balance.
 
-## Story 5 — Standardize API errors and input behavior
+## Story 6 — Standardize API errors and input behavior
 
 **User story:** As a tutorial user, I want every predictable API failure to use one JSON error format so that I can create reliable JMeter assertions.
 
@@ -194,7 +228,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 6. Establish transfer request DTO validation for source account ID, destination account ID, amount presence/type/size/precision, and optional description. The transfer service will enforce state-dependent rules later.
 7. Decide and consistently implement account-ID format validation: nonblank, at most 64 characters, no whitespace, case-sensitive.
 8. Ensure error timestamp comes from the injected UTC clock where the handler can access it.
-9. Avoid stack traces, exception class names, and internal implementation details in response bodies; log unexpected failures server-side.
+9. Avoid stack traces, exception class names, and internal implementation details in response bodies. Expected 4xx failures must not produce error-level stack traces. Log an unexpected 5xx failure once at ERROR with the request ID, method, sanitized route template, status, and exception; do not log the request body or business data.
 
 ### Acceptance criteria
 
@@ -204,6 +238,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 - Unknown JSON fields and invalid formats return 400 `VALIDATION_ERROR`.
 - An unknown account returns 404 `ACCOUNT_NOT_FOUND`.
 - An unexpected exception produces 500 `INTERNAL_ERROR` without a stack trace in the body.
+- Expected 4xx responses do not emit an exception stack trace; an unexpected 5xx response has one sanitized ERROR event associated with its request ID.
 - Actuator health continues to use its own response format.
 
 ### Minimum automated verification
@@ -218,7 +253,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 
 - Submit malformed JSON, an unknown property, and a bad account ID. Compare status, `code`, and `path` to the design document.
 
-## Story 6 — Create atomic transfers
+## Story 7 — Create atomic transfers
 
 **User story:** As a tutorial user, I want to transfer funds between two valid accounts so that I can observe correct balances and a retrievable transaction record.
 
@@ -238,7 +273,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 7. Prepare replacement account snapshots, a completed transfer transaction, and a response snapshot before publishing state.
 8. Publish source debit, destination credit, and transaction record while holding the write lock. Release in a `finally` path.
 9. Map business rules to the documented 422/404 codes. An insufficient-funds failure must not add a transaction or alter either balance.
-10. Do not add idempotency behavior yet; story 7 adds it under the same write lock.
+10. Do not add idempotency behavior yet; story 8 adds it under the same write lock.
 
 ### Acceptance criteria
 
@@ -263,7 +298,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 
 - Execute one transfer using a temporary client request and verify both balances. Restart afterward if reset has not yet been implemented.
 
-## Story 7 — Make transfers idempotent
+## Story 8 — Make transfers idempotent
 
 **User story:** As a client that may retry timed-out requests, I want a transfer key to safely identify one successful operation so that retrying does not move money twice.
 
@@ -280,6 +315,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 6. Store the immutable success response as it was at creation: type `TRANSFER`, status `COMPLETED`, and no reversal links.
 7. Do not store keys for parsing, header-validation, validation, account-not-found, same-account, or insufficient-funds failures.
 8. Ensure no `computeIfAbsent`, separate key lock, or lock hierarchy is added. The state coordinator is the single boundary.
+9. Do not log an idempotency key, canonical request, replay payload, or conflict payload. The request-completion event from story 3 is sufficient for operational visibility.
 
 ### Acceptance criteria
 
@@ -289,6 +325,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 - Reordered JSON properties and 150.75 versus 150.750 are considered the same payload.
 - A failed attempt does not consume a key; the same key can later complete if the request becomes valid/possible.
 - Missing, blank, repeated, or invalid headers return 400 `INVALID_IDEMPOTENCY_KEY`.
+- Idempotency keys do not appear in application logs, including conflict and replay paths.
 
 ### Minimum automated verification
 
@@ -302,7 +339,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 
 - Send the same complete POST request repeatedly with one key. Expect one 201 and subsequent 200 responses with the same transaction ID.
 
-## Story 8 — Expose transfer creation over HTTP
+## Story 9 — Expose transfer creation over HTTP
 
 **User story:** As a tutorial user, I want a complete transfer-creation HTTP contract so that I can send requests, extract a transaction ID, and distinguish first submission from replay.
 
@@ -336,7 +373,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 
 - Create a transfer, use a JSON extractor in a small JMeter test or another client to capture `transactionId`, and inspect the response headers.
 
-## Story 9 — Read transactions and history
+## Story 10 — Read transactions and history
 
 **User story:** As a tutorial user, I want to retrieve a transaction and browse transfer history so that I can correlate requests and assert the final effects of a test run.
 
@@ -351,7 +388,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 7. Include records where the filter account is either source or destination.
 8. Sort history by `createdAt` ascending and `transactionId` ascending for timestamp ties.
 9. Return an envelope with `items`, `offset`, `limit`, and `total`. Total is the number of matching records before pagination.
-10. Return both original transfers and later reversal records after story 10; no status filter is required.
+10. Return both original transfers and later reversal records after story 11; no status filter is required.
 
 ### Acceptance criteria
 
@@ -375,7 +412,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 
 - Create two transfers through different account pairs, then inspect full and account-filtered history.
 
-## Story 10 — Reverse completed transfers
+## Story 11 — Reverse completed transfers
 
 **User story:** As a tutorial user, I want to reverse a completed original transfer once so that I can demonstrate compensating financial operations without deleting history.
 
@@ -420,19 +457,19 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 
 - Create a transfer, reverse it, retrieve both IDs, inspect history, and verify balances. Then repeat the reversal request to observe 409.
 
-## Story 11 — Reset the simulation
+## Story 12 — Reset the simulation
 
 **User story:** As a test-suite operator, I want one administrative reset endpoint so that each functional or load test can begin from the same state.
 
 ### Implementation tasks
 
 1. Implement `POST /api/v1/admin/reset` with a zero-byte body requirement.
-2. Reuse the exact seed-data factory from story 3. Do not duplicate literal account values in the reset service.
+2. Reuse the exact seed-data factory from story 4. Do not duplicate literal account values in the reset service.
 3. Acquire the shared write lock, restore the three account values, clear transactions, and clear idempotency entries as one logical operation.
 4. Keep the shared lock instance in place. Do not construct a new coordinator or let requests retain a reference to a discarded one.
 5. Return 204 with no body and no Location header only after reset has completed.
 6. Reject a nonempty request body with 400 `VALIDATION_ERROR`.
-7. Document/reset logs minimally without putting request data or transactional details in logs by default.
+7. Emit one INFO `simulation.reset.completed` event after a successful reset. It may include the request ID and event name only; do not log account values, transaction counts, idempotency keys, or request data.
 
 ### Acceptance criteria
 
@@ -442,6 +479,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 - An old transaction ID returns 404 after reset.
 - Reset response is 204 and has zero response bytes.
 - Concurrent mutating operations are ordered entirely before or after reset by the shared lock; reset cannot expose partial state.
+- A successful reset emits one sanitized completion event after its state transition completes.
 
 ### Minimum automated verification
 
@@ -453,7 +491,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 
 - Run reset before a manual test sequence, create a transfer, reset again, and confirm the transaction lookup is 404.
 
-## Story 12 — Protect concurrency invariants
+## Story 13 — Protect concurrency invariants
 
 **User story:** As a load-test author, I want concurrent requests to preserve balances and idempotency so that JMeter can safely demonstrate real contention instead of race conditions.
 
@@ -467,7 +505,7 @@ Use UTC timestamps, BigDecimal for all money, and immutable snapshots across rep
 3. Verify transfer idempotency lookup, new-transfer validation, account mutation, transaction storage, and idempotency storage all occur under one write-lock acquisition.
 4. Verify reversal checks and all its mutations use one write-lock acquisition.
 5. Verify reset uses the same write lock and never replaces its coordinator.
-6. Keep critical sections free of HTTP calls, file operations, random waits, slow logging, JSON serialization, or test synchronization waits.
+6. Keep critical sections free of HTTP calls, file operations, random waits, JSON serialization, test synchronization waits, and domain logging. Request-completion and reset events must be emitted only after the state lock has been released.
 7. Do not add artificial delay/failure behavior merely to make a race easier to observe.
 
 ### Acceptance criteria
@@ -493,7 +531,7 @@ Use a small fixed executor, a start barrier/latch, a bounded future timeout, and
 - Run the shared-source contention scenario from the design document. Stop worker threads before reading final balances/history.
 - Run same-key concurrent retries. Expect one 201 and remaining 200 responses when all requests reach the application.
 
-## Story 13 — Containerize the application
+## Story 14 — Containerize the application
 
 **User story:** As a tutorial user, I want to launch the API in one Docker container so that I can reproduce the environment without installing a database or Docker Compose stack.
 
@@ -508,6 +546,7 @@ Use a small fixed executor, a start barrier/latch, a bounded future timeout, and
 7. Document port 8080, `docker build -t ledgerflow-api:local .`, and `docker run --rm --name ledgerflow-api -p 127.0.0.1:8080:8080 ledgerflow-api:local` in the project README or a Docker section.
 8. Add a focused `.dockerignore` so build context omits `target`, VCS data, editor metadata, and local result files. Do not exclude source/build descriptors needed by Docker.
 9. Do not add Docker Compose, a volume, database configuration, or an image-internal persistence mechanism.
+10. Keep structured application logs on standard output. Do not add a container log file, sidecar collector, or log persistence volume.
 
 ### Acceptance criteria
 
@@ -516,13 +555,14 @@ Use a small fixed executor, a start barrier/latch, a bounded future timeout, and
 - Account list returns the three seed accounts in a fresh container.
 - Stopping/removing and starting a new container returns to seed data.
 - The final runtime image contains no Maven dependency cache or source tree beyond what the runtime needs.
+- Application logs are visible through the container's standard output as structured JSON.
 
 ### Minimum automated verification
 
 - No unit test is necessary for Dockerfile instructions.
 - Build the image once and call health plus account list manually as the verification step.
 
-## Story 14 — Run the JMeter tutorial acceptance pass
+## Story 15 — Run the JMeter tutorial acceptance pass
 
 **User story:** As the tutorial author, I want a verified sequence of JMeter scenarios so that learners can practice each important REST and concurrency behavior against the completed API.
 
@@ -534,6 +574,7 @@ Use a small fixed executor, a start barrier/latch, a bounded future timeout, and
 4. Use a setUp Thread Group to reset once before workers begin. Do not reset from each worker thread.
 5. Use a tearDown Thread Group only after workload threads are complete if a post-suite reset is desired.
 6. Generate and retain one idempotency key per logical transfer. For a retry, reuse the same key.
+7. Add an `X-Request-Id` header per logical request flow and retain it while correlating a request with its console log event. Do not use an idempotency key as a log correlation ID.
 
 ### Acceptance scenarios
 
@@ -548,6 +589,7 @@ Use a small fixed executor, a start barrier/latch, a bounded future timeout, and
 9. **Opposite directions:** coordinate requests in both directions; verify all complete and final total is conserved.
 10. **Double reversal:** coordinate two reversals for one transfer; assert one 200 and one 409.
 11. **Reset:** reset after a workload and assert seed accounts, zero history, and 404 for a former transaction ID.
+12. **Log correlation:** send a known `X-Request-Id` with a business request; assert it is returned and locate the corresponding sanitized completion event in console output.
 
 ### JMeter reporting expectations
 
@@ -568,12 +610,12 @@ Use these checkpoints to keep the project easy to recover and review.
 
 | Checkpoint | Stories complete | What to demonstrate |
 | --- | --- | --- |
-| A | 1–3 | Application starts, health is UP, seed state exists internally |
-| B | 4–5 | Account reads and consistent API error JSON |
-| C | 6–8 | Atomic transfer endpoint and idempotent retry behavior |
-| D | 9–11 | Full functional API: history, reversal, reset |
-| E | 12 | Concurrent invariants protected by automated regression tests |
-| F | 13–14 | Container execution and verified JMeter tutorial scenarios |
+| A | 1–4 | Application starts, health is UP, logging is correlated, and seed state exists internally |
+| B | 5–6 | Account reads and consistent API error JSON |
+| C | 7–9 | Atomic transfer endpoint and idempotent retry behavior |
+| D | 10–12 | Full functional API: history, reversal, reset |
+| E | 13 | Concurrent invariants protected by automated regression tests |
+| F | 14–15 | Container execution and verified JMeter tutorial scenarios |
 
 ## Final implementation review
 
@@ -585,6 +627,7 @@ Before treating the API as ready for the tutorial, review the following:
 - The source account cannot become negative, and account total remains 115000.00.
 - Transfer retry semantics and post-reversal replay semantics match the design document.
 - HTTP error status, body fields, and stable error codes match the documented contract.
+- Logs are structured JSON on stdout, use request IDs for correlation, and exclude financial, personal, credential, and idempotency data.
 - Reset clears accounts to seed values, transfers, and idempotency keys.
 - JMeter tests use a single target instance and reset only at controlled suite boundaries.
 - Docker starts the same in-memory application and loses state when replaced/restarted.
